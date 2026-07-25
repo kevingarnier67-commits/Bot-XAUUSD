@@ -38,10 +38,19 @@ npm run preview    # sert le build (test d'installation iPhone)
 
 ## Moteur (`src/engine/`, logique pure sans React)
 
-- **`clock.ts`** — temps réel, sessions UTC (Sydney/Asia, London 07–12, Overlap 12–16, NY 16–21, Close). La session module la fréquence de scan et le seuil de qualité des signaux.
-- **`brain.ts`** — détection de régime TREND / RANGE / VOLATILE (pente + vol réalisée sur fenêtre de ticks réels) → Momentum / Mean Reversion / Breakout. **winProb plafonnée à 56 %** ; l'edge vient du R:R (1.3–2.6). Les signaux faibles sont rejetés **et loggés**.
+Le cerveau applique une **stratégie ICT** (Inner Circle Trader) mécanisée sur des bougies M1/M5 agrégées depuis les ticks réels (et persistées, l'historique survit aux redémarrages) :
+
+- **Structure de marché** — swings fractals, biais M5 (HH/HL → haussier, LH/LL → baissier), **MSS** (Market Structure Shift : clôture au-delà du dernier swing opposé).
+- **FVG / IFVG** — Fair Value Gaps à 3 bougies avec suivi d'état : un FVG percé en clôture **s'inverse** (IFVG) et se trade au retest dans l'autre sens ; une inversion invalidée meurt. Order block adjacent (dernière bougie opposée avant le displacement) compté en confluence.
+- **Liquidité** — PDH/PDL (high/low du jour précédent), ranges asiatique (00–07) et de Londres (07–12), **EQH/EQL** (doubles sommets/creux ≈ pools de stops), et détection de **sweeps** (mèche au-delà d'un niveau puis clôture de retour = raid des stops).
+- **Premium/Discount** — équilibre du dealing range ; on préfère acheter en discount, vendre en premium.
+- **Kill zones** — London 07–10 UTC, New York 12–15 UTC ; hors KZ le seuil de confluence est durci.
+- **Modèles d'entrée** — `Sweep+MSS` (modèle 2022 : raid de liquidité → MSS → retrace dans le FVG du displacement, la plus forte confluence), `FVG` (retrace en tendance), `IFVG` (retest d'inversion). **SL derrière la zone/l'extrême du sweep**, **cible = prochaine pool de liquidité** (draw on liquidity) ; R:R < 1.3 → rejeté.
+
+- **`clock.ts`** — temps réel, sessions UTC (Sydney/Asia, London 07–12, Overlap 12–16, NY 16–21, Close) + kill zones. La session module la fréquence de scan et le seuil de confluence.
+- **`candles.ts` / `ict.ts` / `brain.ts`** — agrégation M1/M5/jours, primitives ICT ci-dessus, scoring de confluence. **winProb plafonnée à 56 %** ; l'edge vient du R:R (1.3–2.6). Les setups filtrés sont rejetés **et loggés** avec la raison ; une zone tradée n'est pas re-tradée pendant 45 min.
 - **`risk.ts`** — 1 % de l'équité par trade (lot via distance SL sur ATR des ticks réels), anti-martingale ×0.7 par perte consécutive (cap 3), cooldown 45 min après 3 pertes, **daily loss limit −3 % → HALTED** jusqu'au jour UTC suivant, max 3 positions, commission 3.50 $/lot, swap −0.45 $/lot/h.
-- **`executor.ts`** — entrée à l'ask + slippage (BUY) / bid − slippage (SELL), slippage aléatoire proportionnel à la vol de session ; SL/TP surveillés à chaque tick, clôture au toucher ; chaque trade porte une **Decision Logic** (technique, contexte, risque chiffré, score qualité) visible dans l'onglet Audit.
+- **`executor.ts`** — entrée à l'ask + slippage (BUY) / bid − slippage (SELL), slippage aléatoire proportionnel à la vol de session ; SL/TP surveillés à chaque tick, clôture au toucher ; chaque trade porte une **Decision Logic** ICT (zone, biais, MSS, sweep, cible de liquidité, risque chiffré) visible dans l'onglet Audit.
 - **Persistance** — état complet (positions, historique, équité, logs) en IndexedDB via `idb-keyval` : l'app reprend où elle en était.
 
 ## Installer sur iPhone
@@ -74,6 +83,8 @@ public/icons/    icônes PWA générées depuis scripts/icon-source*.svg
 
 ## Tests (`npm test`)
 
+- ICT : détection FVG + order block, inversion en IFVG et invalidation, sweeps de liquidité, biais HH/HL et LH/LL, MSS, agrégation M1/M5 et clôture des jours (PDH/PDL).
+- Brain : scénario complet d'entrée BUY sur FVG en kill zone, anti-réentrée de zone, durcissement hors KZ, rejet R:R < 1.3, silence sans historique ou sans zone au contact.
 - Sizing : 1 % risqué exact pour une distance SL donnée, anti-martingale, arrondi de lot.
 - Déclenchement SL/TP sur séquences de ticks synthétiques (bid pour BUY, ask pour SELL).
 - Cooldown après 3 pertes · halt quotidien à −3 % · levée du halt au jour UTC suivant.

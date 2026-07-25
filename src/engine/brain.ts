@@ -1,9 +1,12 @@
-// StrategyBrain : détection de régime sur les ticks réels + génération de signaux.
+// StrategyBrain ICT : le prix est analysé en bougies (structure, liquidité,
+// FVG/IFVG) et les entrées se prennent au contact d'une zone, avec confluence.
 // Honnêteté du modèle : winProb plafonnée à 56%, l'edge vient du R:R.
 
-import { atrFromTicks, highLow, realizedVol, slopePerMinute } from "./indicators";
+import { getKillzone, type Killzone } from "./clock";
+import { analyze, type IctAnalysis, type Sweep, type Zone } from "./ict";
 import type {
-  Regime,
+  Bias,
+  EngineState,
   SessionInfo,
   Signal,
   StrategyName,
@@ -13,131 +16,219 @@ import type {
 export type Rng = () => number;
 
 export interface BrainResult {
-  regime: Regime;
+  bias: Bias;
+  killzone: Killzone | null;
   signal: Signal | null;
-  /** Raison du rejet si aucun signal accepté (pour le log). */
+  /** Raison du rejet si un setup existait mais a été filtré. */
   rejection: string | null;
+  /** Clé de la zone utilisée (anti-réentrée sur la même zone). */
+  zoneKey: string | null;
 }
 
-/** Seuils de classification du régime (fractions du prix / $ par minute). */
-const VOL_HIGH = 2.2e-4; // vol tick-à-tick élevée → VOLATILE
-const SLOPE_TREND = 0.35; // |pente| $/min significative → TREND
-
-export function detectRegime(ticks: readonly Tick[]): Regime {
-  const vol = realizedVol(ticks);
-  const slope = Math.abs(slopePerMinute(ticks));
-  if (vol > VOL_HIGH) return "VOLATILE";
-  if (slope > SLOPE_TREND) return "TREND";
-  return "RANGE";
+export interface BrainOptions {
+  /** Zones récemment tradées à ignorer (clés `kind-dir-createdT`). */
+  recentZoneKeys?: readonly string[];
 }
 
-const STRATEGY_FOR_REGIME: Record<Regime, StrategyName> = {
-  TREND: "Momentum",
-  RANGE: "MeanReversion",
-  VOLATILE: "Breakout",
-};
+const MIN_M1 = 45; // bougies M1 minimum avant d'oser une analyse
+const MIN_RR = 1.3;
+const MAX_RR = 2.6;
+const SWEEP_MAX_AGE_MS = 40 * 60_000; // un sweep n'est "récent" que 40 min
+
+export function zoneKeyOf(z: Zone): string {
+  return `${z.kind}-${z.dir}-${z.createdT}`;
+}
 
 function clamp(x: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, x));
 }
 
-/**
- * Évalue la fenêtre de ticks et propose (ou rejette) un signal.
- * `rng` est injectable pour rendre les tests déterministes.
- */
+/** Évalue l'état du marché et propose (ou rejette) une entrée ICT. */
 export function evaluate(
-  ticks: readonly Tick[],
+  state: EngineState,
+  tick: Tick,
   session: SessionInfo,
-  rng: Rng = Math.random,
+  opts: BrainOptions = {},
 ): BrainResult {
-  if (ticks.length < 12) {
+  const killzone = getKillzone(tick.ts);
+
+  if (state.m1.length < MIN_M1) {
     return {
-      regime: "RANGE",
+      bias: "NEUTRAL",
+      killzone,
       signal: null,
-      rejection: "Historique de ticks insuffisant pour analyser",
+      rejection: null, // pas un setup rejeté : simplement pas assez d'historique
+      zoneKey: null,
     };
   }
 
-  const regime = detectRegime(ticks);
-  const strategy = STRATEGY_FOR_REGIME[regime];
-  const last = ticks[ticks.length - 1]!;
-  const slope = slopePerMinute(ticks);
-  const vol = realizedVol(ticks);
-  const atr = atrFromTicks(ticks);
-  const { high, low } = highLow(ticks);
-  const mid = last.mid;
-  const spread = last.ask - last.bid;
+  const a = analyze(state, tick.ts);
+  const bias = a.biasM5;
+  const P = tick.mid;
+  const spread = tick.ask - tick.bid;
 
-  let side: Signal["side"];
-  let setupStrength: number; // 0–1, force du setup selon la stratégie
+  // Zone active au contact du prix, la plus récente d'abord.
+  const skip = new Set(opts.recentZoneKeys ?? []);
+  const touched = [...a.zones]
+    .reverse()
+    .find((z) => P >= z.bottom && P <= z.top && !skip.has(zoneKeyOf(z)));
 
-  if (strategy === "Momentum") {
-    side = slope > 0 ? "BUY" : "SELL";
-    setupStrength = clamp(Math.abs(slope) / (SLOPE_TREND * 3), 0, 1);
-  } else if (strategy === "MeanReversion") {
-    const center = (high + low) / 2;
-    const span = Math.max(high - low, 0.01);
-    const offset = (mid - center) / (span / 2); // -1 (bas du range) … +1 (haut)
-    side = offset > 0 ? "SELL" : "BUY";
-    setupStrength = clamp(Math.abs(offset), 0, 1);
-  } else {
-    // Breakout : on suit la cassure du bord de fenêtre le plus proche.
-    const distHigh = high - mid;
-    const distLow = mid - low;
-    side = distHigh < distLow ? "BUY" : "SELL";
-    const proximity = 1 - clamp(Math.min(distHigh, distLow) / Math.max(atr, 0.01), 0, 1);
-    setupStrength = clamp(proximity * (vol / VOL_HIGH) * 0.6, 0, 1);
+  if (!touched) {
+    return { bias, killzone, signal: null, rejection: null, zoneKey: null };
   }
 
-  // Score qualité : force du setup, pénalité de spread, bruit d'incertitude.
-  const spreadPenalty = clamp((spread / Math.max(atr, 0.01)) * 18, 0, 25);
-  const noise = (rng() - 0.5) * 14;
-  const qualityScore = Math.round(
-    clamp(35 + setupStrength * 55 - spreadPenalty + noise, 0, 100),
-  );
+  const side = touched.dir === "BULL" ? "BUY" : "SELL";
+  const zoneKey = zoneKeyOf(touched);
 
-  // winProb honnête : 50–56% max, corrélée à la qualité.
-  const winProb = clamp(0.5 + (qualityScore / 100) * 0.06, 0.5, 0.56);
-  // R:R 1.3–2.6 : les setups tendance/breakout visent plus loin.
-  const rrBase = strategy === "MeanReversion" ? 1.3 : 1.7;
-  const rr = clamp(rrBase + setupStrength * 0.9, 1.3, 2.6);
+  // Sweep récent du côté opposé à l'entrée (raid des stops avant le retournement).
+  const relevantSweep = findRelevantSweep(a, side, tick.ts);
+  const mssAligned =
+    a.mss !== null && a.mss.dir === (side === "BUY" ? "UP" : "DOWN");
+  const isModel2022 = relevantSweep !== null && mssAligned;
 
-  const slDistance = atr;
+  const strategy: StrategyName = isModel2022
+    ? "Sweep+MSS"
+    : touched.kind === "IFVG"
+      ? "IFVG"
+      : "FVG";
 
-  const logicTechnical =
-    `Régime ${regime} → ${strategy}. Pente ${slope.toFixed(2)} $/min, ` +
-    `vol réalisée ${(vol * 100).toFixed(3)}%/tick, ATR ${atr.toFixed(2)} $, ` +
-    `fenêtre ${low.toFixed(2)}–${high.toFixed(2)} $.`;
-  const logicContext =
-    `Session ${session.name} (vol ×${session.volFactor}), ` +
-    `spread ${spread.toFixed(2)} $, seuil qualité ${session.minQuality}.`;
-
-  if (qualityScore < session.minQuality) {
+  // ---- SL : derrière la zone, et derrière l'extrême du sweep le cas échéant.
+  const buffer = Math.max(0.25, a.atr1 * 0.25);
+  let slPrice: number;
+  if (side === "BUY") {
+    slPrice = touched.bottom - buffer;
+    if (relevantSweep) slPrice = Math.min(slPrice, relevantSweep.extreme - buffer);
+  } else {
+    slPrice = touched.top + buffer;
+    if (relevantSweep) slPrice = Math.max(slPrice, relevantSweep.extreme + buffer);
+  }
+  const entryRef = side === "BUY" ? tick.ask : tick.bid;
+  const slDistance = Math.abs(entryRef - slPrice);
+  if (slDistance <= spread) {
     return {
-      regime,
+      bias,
+      killzone,
+      signal: null,
+      rejection: `Setup ${side} ${strategy} rejeté : SL trop proche (${slDistance.toFixed(2)} $ ≤ spread)`,
+      zoneKey,
+    };
+  }
+
+  // ---- Cible : prochaine liquidité opposée (draw on liquidity).
+  const target = findTarget(a, side, entryRef);
+  const rrRaw =
+    target !== null ? Math.abs(target.price - entryRef) / slDistance : 0;
+  if (target === null || rrRaw < MIN_RR) {
+    return {
+      bias,
+      killzone,
       signal: null,
       rejection:
-        `Signal ${side} ${strategy} rejeté : qualité ${qualityScore} < ` +
-        `${session.minQuality} (session ${session.name})`,
+        `Setup ${side} ${strategy} rejeté : cible de liquidité trop proche ` +
+        `(R:R ${rrRaw.toFixed(2)} < ${MIN_RR})`,
+      zoneKey,
     };
   }
+  const rr = clamp(rrRaw, MIN_RR, MAX_RR);
+
+  // ---- Score de confluence.
+  const inDiscount = P < a.range.equilibrium;
+  const pdAligned = side === "BUY" ? inDiscount : !inDiscount;
+  let score = 30;
+  if (isModel2022) score += 25;
+  else if (mssAligned) score += 12;
+  if (bias === (side === "BUY" ? "BULLISH" : "BEARISH")) score += 10;
+  if (killzone) score += 12;
+  if (pdAligned) score += 8;
+  if (touched.obAdjacent) score += 6;
+  if (["PDH", "PDL", "EQH", "EQL"].includes(target.name)) score += 6;
+  score = Math.min(100, score);
+
+  // Hors kill zone, on durcit le filtre : l'ICT se trade aux heures qui bougent.
+  const minQuality = session.minQuality + (killzone ? 0 : 12);
+  if (score < minQuality) {
+    return {
+      bias,
+      killzone,
+      signal: null,
+      rejection:
+        `Setup ${side} ${strategy} rejeté : confluence ${score} < ${minQuality} ` +
+        `(session ${session.name}${killzone ? `, ${killzone}` : ", hors kill zone"})`,
+      zoneKey,
+    };
+  }
+
+  const winProb = clamp(0.5 + (score / 100) * 0.06, 0.5, 0.56);
+
+  const technical =
+    `${strategy} ${side} sur ${touched.kind} ${touched.dir} ` +
+    `[${touched.bottom.toFixed(2)}–${touched.top.toFixed(2)}]` +
+    `${touched.obAdjacent ? " + order block adjacent" : ""}. ` +
+    `Biais M5 ${bias}` +
+    `${a.mss ? `, MSS ${a.mss.dir} @ ${a.mss.level.toFixed(2)}` : ""}` +
+    `${relevantSweep ? `, sweep ${relevantSweep.level.name} @ ${relevantSweep.level.price.toFixed(2)} (extrême ${relevantSweep.extreme.toFixed(2)})` : ""}. ` +
+    `Cible : ${target.name} @ ${target.price.toFixed(2)}. ATR M1 ${a.atr1.toFixed(2)} $.`;
+  const context =
+    `Session ${session.name}${killzone ? ` · ${killzone}` : " · hors kill zone"} · ` +
+    `${pdAligned ? (inDiscount ? "discount" : "premium") + " aligné" : "équilibre défavorable"} ` +
+    `(EQ ${a.range.equilibrium.toFixed(2)}) · spread ${spread.toFixed(2)} $ · ` +
+    `seuil confluence ${minQuality}.`;
 
   const signal: Signal = {
     side,
     strategy,
-    regime,
+    bias,
     winProb,
     rr,
     slDistance,
-    qualityScore,
-    ts: last.ts,
-    logic: {
-      technical: logicTechnical,
-      context: logicContext,
-      risk: "", // complété par le RiskManager au sizing
-      qualityScore,
-    },
+    qualityScore: score,
+    ts: tick.ts,
+    logic: { technical, context, risk: "", qualityScore: score },
   };
 
-  return { regime, signal, rejection: null };
+  return { bias, killzone, signal, rejection: null, zoneKey };
+}
+
+/** Sweep récent pertinent : raid des lows pour un BUY, des highs pour un SELL. */
+function findRelevantSweep(
+  a: IctAnalysis,
+  side: "BUY" | "SELL",
+  nowTs: number,
+): Sweep | null {
+  const wanted = side === "BUY" ? "LOW" : "HIGH";
+  let best: Sweep | null = null;
+  for (const s of a.sweeps) {
+    if (s.level.side !== wanted) continue;
+    if (nowTs - s.t > SWEEP_MAX_AGE_MS) continue;
+    if (!best || s.t > best.t) best = s;
+  }
+  return best;
+}
+
+/** Prochaine liquidité du côté du trade (la cible que le prix va chercher). */
+function findTarget(
+  a: IctAnalysis,
+  side: "BUY" | "SELL",
+  entry: number,
+): { name: string; price: number } | null {
+  const spreadGuard = 0.2;
+  let best: { name: string; price: number } | null = null;
+  for (const l of a.levels) {
+    if (side === "BUY" && l.side === "HIGH" && l.price > entry + spreadGuard) {
+      if (!best || l.price < best.price) best = { name: l.name, price: l.price };
+    }
+    if (side === "SELL" && l.side === "LOW" && l.price < entry - spreadGuard) {
+      if (!best || l.price > best.price) best = { name: l.name, price: l.price };
+    }
+  }
+  if (!best) {
+    // À défaut de pool identifié : borne du dealing range.
+    const rangeTarget = side === "BUY" ? a.range.high : a.range.low;
+    if (side === "BUY" && rangeTarget > entry + spreadGuard) {
+      best = { name: "Range High", price: rangeTarget };
+    } else if (side === "SELL" && rangeTarget < entry - spreadGuard) {
+      best = { name: "Range Low", price: rangeTarget };
+    }
+  }
+  return best;
 }

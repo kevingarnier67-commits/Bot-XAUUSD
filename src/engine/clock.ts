@@ -51,3 +51,16 @@ export function isMarketOpen(ts: number): boolean {
 export function dayKeyUTC(ts: number): string {
   return new Date(ts).toISOString().slice(0, 10);
 }
+
+export type Killzone = "LONDON_KZ" | "NY_KZ";
+
+/**
+ * Kill zones ICT (approximation UTC, sans gestion du changement d'heure US) :
+ * London 07–10, New York AM 12–15. Hors KZ, le filtre qualité est durci.
+ */
+export function getKillzone(ts: number): Killzone | null {
+  const h = new Date(ts).getUTCHours();
+  if (h >= 7 && h < 10) return "LONDON_KZ";
+  if (h >= 12 && h < 15) return "NY_KZ";
+  return null;
+}

@@ -1,7 +1,7 @@
 // Tests de l'horloge : sessions UTC et détection marché fermé.
 
 import { describe, expect, it } from "vitest";
-import { getSession, isMarketOpen } from "./clock";
+import { getKillzone, getSession, isMarketOpen } from "./clock";
 
 describe("getSession", () => {
   it("classe les heures UTC dans les bonnes sessions", () => {
@@ -29,6 +29,14 @@ describe("isMarketOpen", () => {
     expect(isMarketOpen(Date.UTC(2026, 6, 25, 12, 0, 0))).toBe(false); // samedi
     expect(isMarketOpen(Date.UTC(2026, 6, 26, 21, 59, 0))).toBe(false); // dim 21:59
     expect(isMarketOpen(Date.UTC(2026, 6, 26, 22, 0, 0))).toBe(true); // dim 22:00
+  });
+
+  it("identifie les kill zones ICT (London 07–10, NY 12–15 UTC)", () => {
+    const d = (h: number) => Date.UTC(2026, 6, 22, h, 0, 0);
+    expect(getKillzone(d(8))).toBe("LONDON_KZ");
+    expect(getKillzone(d(13))).toBe("NY_KZ");
+    expect(getKillzone(d(11))).toBeNull();
+    expect(getKillzone(d(20))).toBeNull();
   });
 
   it("ferme les jours fériés majeurs", () => {

@@ -1,6 +1,7 @@
 // Executor : orchestrateur du moteur. Exécutions SIMULÉES sur prix réels.
 // Aucun ordre réel n'est passé — spread, slippage, commission et swap sont modélisés.
 
+import { updateCandles } from "./candles";
 import { dayKeyUTC } from "./clock";
 import {
   COMMISSION_PER_LOT,
@@ -44,6 +45,9 @@ export function initialEngineState(capital: number, now: number): EngineState {
     dayStartEquity: capital,
     dayKey: dayKeyUTC(now),
     lastTickTs: 0,
+    m1: [],
+    days: [],
+    curDay: null,
   };
 }
 
@@ -113,6 +117,7 @@ export class Executor {
    */
   onTick(tick: Tick): ClosedTrade[] {
     this.maybeRollDay(tick.ts, tick);
+    updateCandles(this.state, tick);
     const closed: ClosedTrade[] = [];
 
     for (const p of [...this.state.positions]) {
@@ -161,7 +166,7 @@ export class Executor {
       id: p.id,
       side: p.side,
       strategy: p.strategy,
-      regime: p.regime,
+      bias: p.bias,
       lots: p.lots,
       entryPrice: p.entryPrice,
       exitPrice,
@@ -266,7 +271,7 @@ export class Executor {
       id: `T${now}-${++this.idCounter}`,
       side: signal.side,
       strategy: signal.strategy,
-      regime: signal.regime,
+      bias: signal.bias,
       lots,
       entryPrice,
       sl,
@@ -310,6 +315,7 @@ export class Executor {
   ): ClosedTrade[] {
     const now = tick.ts;
     this.maybeRollDay(now, tick);
+    updateCandles(this.state, tick);
     const closed: ClosedTrade[] = [];
     const minutes = Math.round(suspendedMs / 60_000);
 

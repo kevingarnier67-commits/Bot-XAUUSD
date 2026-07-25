@@ -2,14 +2,15 @@
 
 import { create } from "zustand";
 import type {
+  Bias,
   BotStatus,
   ClosedTrade,
   EquityPoint,
   LogEntry,
   Position,
-  Regime,
   Tick,
 } from "../engine/types";
+import type { Killzone } from "../engine/clock";
 import type { Kpis } from "../engine/stats";
 import type { FeedMode } from "../data";
 import { DEFAULT_SETTINGS, type Settings } from "./settings";
@@ -23,7 +24,8 @@ export interface AppSnapshot {
   online: boolean;
   marketOpen: boolean;
   status: BotStatus;
-  regime: Regime | null;
+  bias: Bias | null;
+  killzone: Killzone | null;
   equity: number;
   balance: number;
   initialCapital: number;
@@ -44,7 +46,8 @@ export const useAppStore = create<AppSnapshot>(() => ({
   online: typeof navigator === "undefined" ? true : navigator.onLine,
   marketOpen: true,
   status: "RUNNING",
-  regime: null,
+  bias: null,
+  killzone: null,
   equity: 0,
   balance: 0,
   initialCapital: 0,

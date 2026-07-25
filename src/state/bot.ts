@@ -5,7 +5,8 @@ import { evaluate } from "../engine/brain";
 import { getSession, isMarketOpen } from "../engine/clock";
 import { Executor, initialEngineState } from "../engine/executor";
 import { computeKpis } from "../engine/stats";
-import type { Regime, Tick } from "../engine/types";
+import type { Killzone } from "../engine/clock";
+import type { Bias, Tick } from "../engine/types";
 import { FeedManager, makeLiveFeed } from "../data";
 import {
   clearEngineState,
@@ -24,7 +25,9 @@ export class BotController {
   private feed: FeedManager | null = null;
   private settings!: Settings;
   private ticks: Tick[] = [];
-  private lastRegime: Regime | null = null;
+  private lastBias: Bias | null = null;
+  private lastKillzone: Killzone | null = null;
+  private recentZones = new Map<string, number>();
   private scanTimer: ReturnType<typeof setTimeout> | null = null;
   private persistTimer: ReturnType<typeof setInterval> | null = null;
   private started = false;
@@ -182,30 +185,36 @@ export class BotController {
     const trainingOnSim = !marketOpen && this.settings.simWhenClosed;
     if (!marketOpen && !trainingOnSim) return; // marché fermé, pas d'entraînement
 
-    // On ne trade que sur des ticks frais de la fenêtre courante.
+    // Analyse ICT sur les bougies persistées, entrée au contact d'une zone.
     const session = getSession(now);
-    const result = evaluate(this.ticks, session);
+    this.pruneRecentZones(now);
+    const result = evaluate(this.executor.state, tick, session, {
+      recentZoneKeys: [...this.recentZones.keys()],
+    });
 
-    if (result.regime !== this.lastRegime) {
+    if (result.bias !== this.lastBias) {
       this.executor.log(
         "regime_change",
-        `Changement de régime : ${this.lastRegime ?? "—"} → ${result.regime}`,
+        `Changement de biais M5 : ${this.lastBias ?? "—"} → ${result.bias}`,
         now,
       );
-      this.lastRegime = result.regime;
+      this.lastBias = result.bias;
     }
+    this.lastKillzone = result.killzone;
 
     if (result.rejection) {
       this.executor.log("signal_rejected", result.rejection, now);
+      if (result.zoneKey) this.recentZones.set(result.zoneKey, now);
     } else if (result.signal) {
       const open = this.executor.tryOpen(result.signal, tick, session);
       if (open.rejection) {
         this.executor.log("signal_rejected", open.rejection, now);
       } else if (open.opened) {
+        if (result.zoneKey) this.recentZones.set(result.zoneKey, now);
         this.executor.log(
           "signal_taken",
           `Signal ${result.signal.side} ${result.signal.strategy} accepté ` +
-            `(qualité ${result.signal.qualityScore}, winProb ${(result.signal.winProb * 100).toFixed(0)}%, ` +
+            `(confluence ${result.signal.qualityScore}, winProb ${(result.signal.winProb * 100).toFixed(0)}%, ` +
             `R:R ${result.signal.rr.toFixed(2)})${tick.source === "sim" ? " [SIM]" : ""}`,
           now,
         );
@@ -214,6 +223,13 @@ export class BotController {
     }
 
     this.publish();
+  }
+
+  /** Une zone tradée ou rejetée n'est pas re-considérée pendant 45 min. */
+  private pruneRecentZones(now: number): void {
+    for (const [key, ts] of this.recentZones) {
+      if (now - ts > 45 * 60_000) this.recentZones.delete(key);
+    }
   }
 
   private applyMarketClosedPolicy(): void {
@@ -235,7 +251,8 @@ export class BotController {
       sourceName: this.feed?.sourceName() ?? "—",
       marketOpen,
       status: this.executor.status(now, marketOpen),
-      regime: this.lastRegime,
+      bias: this.lastBias,
+      killzone: this.lastKillzone,
       equity: this.executor.equity(tick),
       balance: state.balance,
       initialCapital: state.initialCapital,
@@ -282,7 +299,9 @@ export class BotController {
       `Reset complet · capital initial ${this.settings.initialCapital.toFixed(2)} $`,
       now,
     );
-    this.lastRegime = null;
+    this.lastBias = null;
+    this.lastKillzone = null;
+    this.recentZones.clear();
     await this.persist();
     this.publish();
   }

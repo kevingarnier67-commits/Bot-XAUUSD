@@ -23,7 +23,8 @@ export function LiveTab() {
   const tick = useAppStore((s) => s.tick);
   const ticks = useAppStore((s) => s.ticks);
   const status = useAppStore((s) => s.status);
-  const regime = useAppStore((s) => s.regime);
+  const bias = useAppStore((s) => s.bias);
+  const killzone = useAppStore((s) => s.killzone);
   const sourceName = useAppStore((s) => s.sourceName);
   const equity = useAppStore((s) => s.equity);
   const initialCapital = useAppStore((s) => s.initialCapital);
@@ -50,7 +51,20 @@ export function LiveTab() {
         </div>
         <div className="chips">
           <span className={`chip ${st.cls}`}>{st.label}</span>
-          {regime && <span className="chip neutral">{regime}</span>}
+          {bias && (
+            <span
+              className={`chip ${
+                bias === "BULLISH" ? "running" : bias === "BEARISH" ? "halted" : "closed"
+              }`}
+            >
+              Biais {bias === "BULLISH" ? "haussier" : bias === "BEARISH" ? "baissier" : "neutre"}
+            </span>
+          )}
+          {killzone && (
+            <span className="chip neutral">
+              {killzone === "LONDON_KZ" ? "KZ London" : "KZ New York"}
+            </span>
+          )}
         </div>
       </div>
 

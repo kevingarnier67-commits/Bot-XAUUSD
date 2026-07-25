@@ -15,9 +15,27 @@ export interface Tick {
 
 export type Side = "BUY" | "SELL";
 
-export type Regime = "TREND" | "RANGE" | "VOLATILE";
+/** Biais directionnel issu de la structure de marché (ICT). */
+export type Bias = "BULLISH" | "BEARISH" | "NEUTRAL";
 
-export type StrategyName = "Momentum" | "MeanReversion" | "Breakout";
+/** Modèles d'entrée ICT implémentés. */
+export type StrategyName = "Sweep+MSS" | "FVG" | "IFVG";
+
+/** Bougie OHLC agrégée depuis les ticks (t = ouverture du bucket, epoch ms). */
+export interface Candle {
+  t: number;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+}
+
+/** High/low d'un jour UTC clos (liquidité PDH/PDL). */
+export interface DayLevel {
+  date: string; // YYYY-MM-DD
+  high: number;
+  low: number;
+}
 
 export type SessionName = "SYDNEY_ASIA" | "LONDON" | "OVERLAP" | "NEW_YORK" | "CLOSE";
 
@@ -45,7 +63,7 @@ export interface DecisionLogic {
 export interface Signal {
   side: Side;
   strategy: StrategyName;
-  regime: Regime;
+  bias: Bias;
   /** Probabilité de gain estimée (0.50–0.56 max, l'edge vient du R:R). */
   winProb: number;
   /** Ratio risque/récompense visé. */
@@ -61,7 +79,7 @@ export interface Position {
   id: string;
   side: Side;
   strategy: StrategyName;
-  regime: Regime;
+  bias: Bias;
   /** Taille en lots (1 lot = 100 oz). */
   lots: number;
   entryPrice: number;
@@ -83,7 +101,7 @@ export interface ClosedTrade {
   id: string;
   side: Side;
   strategy: StrategyName;
-  regime: Regime;
+  bias: Bias;
   lots: number;
   entryPrice: number;
   exitPrice: number;
@@ -144,4 +162,10 @@ export interface EngineState {
   dayKey: string;
   /** Dernier ts où le moteur a traité un tick (pour le rattrapage). */
   lastTickTs: number;
+  /** Bougies M1 agrégées depuis les ticks (fenêtre glissante persistée). */
+  m1: Candle[];
+  /** Jours UTC clos : liquidité PDH/PDL. */
+  days: DayLevel[];
+  /** Jour UTC en cours d'agrégation. */
+  curDay: DayLevel | null;
 }

@@ -23,8 +23,8 @@ function mkTick(mid: number, ts: number, spread = 0.4): Tick {
 function mkSignal(side: Signal["side"], slDistance = 5, rr = 2): Signal {
   return {
     side,
-    strategy: "Momentum",
-    regime: "TREND",
+    strategy: "FVG",
+    bias: "BULLISH",
     winProb: 0.54,
     rr,
     slDistance,
