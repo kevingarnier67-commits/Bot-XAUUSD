@@ -9,6 +9,12 @@ import type { Killzone } from "../engine/clock";
 import type { Bias, Tick } from "../engine/types";
 import { FeedManager, makeLiveFeed } from "../data";
 import {
+  fetchGoldApiIoPrevDay,
+  fetchTwelveDataHistory,
+  mergeCandleHistory,
+  mergeDayLevels,
+} from "../data/history";
+import {
   clearEngineState,
   loadEngineState,
   saveEngineState,
@@ -63,6 +69,7 @@ export class BotController {
       this.executor.state.positions.length > 0;
 
     this.createFeed();
+    void this.bootstrapHistory();
 
     if (needsCatchUp) {
       this.awaitFirstTickForCatchUp(gap);
@@ -103,6 +110,83 @@ export class BotController {
     this.feed.subscribe((tick) => this.onTick(tick));
     this.feed.start();
     this.applyMarketClosedPolicy();
+  }
+
+  /**
+   * Backfill de l'historique via API pour éviter le démarrage à froid ICT :
+   * Twelve Data → bougies M1 réelles + PDH/PDL ; GoldAPI.io → PDH/PDL seuls.
+   * Sans clé (gold-api.com), pas d'historique : warm-up ~45 min, loggé.
+   */
+  private historyFetchInFlight = false;
+
+  private async bootstrapHistory(): Promise<void> {
+    if (this.historyFetchInFlight) return;
+    const state = this.executor.state;
+    const needM1 = state.m1.length < 300;
+    const needDays = state.days.length === 0;
+    if (!needM1 && !needDays) return;
+
+    const now = Date.now();
+    const tdKey = this.settings.twelveDataKey.trim();
+    const gaKey = this.settings.goldApiIoKey.trim();
+
+    if (!tdKey && !gaKey) {
+      if (needM1 && state.m1.length < 5) {
+        this.executor.log(
+          "info",
+          "Pas de clé API : aucun historique récupérable, le moteur ICT " +
+            "constituera ses bougies en ~45 min (clé Twelve Data recommandée)",
+          now,
+        );
+        this.publish();
+      }
+      return;
+    }
+
+    this.historyFetchInFlight = true;
+    try {
+      if (tdKey) {
+        const fetched = await fetchTwelveDataHistory(tdKey);
+        if (fetched.m1.length > 0 || fetched.days.length > 0) {
+          state.m1 = mergeCandleHistory(state.m1, fetched.m1);
+          state.days = mergeDayLevels(state.days, fetched.days, now);
+          this.executor.log(
+            "feed",
+            `Historique Twelve Data récupéré : ${fetched.m1.length} bougies M1, ` +
+              `${fetched.days.length} jours (PDH/PDL) — analyse ICT immédiate`,
+            Date.now(),
+          );
+        } else {
+          this.executor.log(
+            "feed",
+            "Historique Twelve Data vide (quota ou symbole indisponible)",
+            Date.now(),
+          );
+        }
+      } else if (gaKey && needDays) {
+        const day = await fetchGoldApiIoPrevDay(gaKey, now);
+        if (day) {
+          state.days = mergeDayLevels(state.days, [day], now);
+          this.executor.log(
+            "feed",
+            `PDH/PDL récupérés via GoldAPI.io (${day.date}) : ` +
+              `${day.high.toFixed(2)} / ${day.low.toFixed(2)}`,
+            Date.now(),
+          );
+        }
+      }
+      await this.persist();
+      this.publish();
+    } catch {
+      this.executor.log(
+        "feed",
+        "Échec de la récupération d'historique — démarrage à froid",
+        Date.now(),
+      );
+      this.publish();
+    } finally {
+      this.historyFetchInFlight = false;
+    }
   }
 
   private lastKnownPrice(): number | undefined {
@@ -281,6 +365,7 @@ export class BotController {
     if (feedRelevantChanged) {
       this.executor.log("feed", "Clés API modifiées — reconnexion du feed", Date.now());
       this.createFeed();
+      void this.bootstrapHistory();
     }
     if (simToggleChanged) {
       this.applyMarketClosedPolicy();

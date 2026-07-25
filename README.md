@@ -27,8 +27,8 @@ npm run preview    # sert le build (test d'installation iPhone)
 | Adapter | Clé | Transport | Particularités |
 |---|---|---|---|
 | `GoldApiFeed` (défaut) | aucune | REST, polling 10 s | mid seul → spread synthétique réaliste 0.30–0.60 $ |
-| `GoldApiIoFeed` | GoldAPI.io | REST, polling 15 s | **bid/ask réels** + high/low du jour (meilleur rattrapage) |
-| `TwelveDataFeed` | Twelve Data | WebSocket (~170 ms) | reconnexion à backoff exponentiel |
+| `GoldApiIoFeed` | GoldAPI.io | REST, polling 15 s | **bid/ask réels** + high/low du jour · backfill PDH/PDL de la veille |
+| `TwelveDataFeed` | Twelve Data | WebSocket (~170 ms) | reconnexion à backoff exponentiel · **backfill historique** M1 (~6 h 30) + jours précédents au démarrage → analyse ICT immédiate |
 | `SimFeed` (fallback) | — | GBM local | vol 0.8 %/jour, clustering GARCH-lite, **ancré sur le dernier prix live** |
 
 - Si le flux live se tait plus de **60 s** → bascule automatique en `SimFeed` avec bannière **« FLUX SIMULÉ — reconnexion… »**. Retour au live loggé dès la reconnexion.
@@ -88,5 +88,6 @@ public/icons/    icônes PWA générées depuis scripts/icon-source*.svg
 - Sizing : 1 % risqué exact pour une distance SL donnée, anti-martingale, arrondi de lot.
 - Déclenchement SL/TP sur séquences de ticks synthétiques (bid pour BUY, ask pour SELL).
 - Cooldown après 3 pertes · halt quotidien à −3 % · levée du halt au jour UTC suivant.
+- Backfill : parsing des séries Twelve Data, fusion avec les bougies locales (le vécu prime), exclusion du jour courant des PDH/PDL.
 - Failover : live silencieux → SimFeed en < 60 s → retour au live à la reconnexion (et refus de simuler sans ancre réelle).
 - Rattrapage post-suspension : clôture correcte au SL/TP sur le range manqué, cas pire SL prioritaire.

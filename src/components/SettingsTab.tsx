@@ -46,7 +46,8 @@ export function SettingsTab() {
             autoComplete="off"
           />
           <div className="hint">
-            Bid/ask réels + high/low du jour (meilleur rattrapage). Polling 15 s.
+            Bid/ask réels + high/low du jour et de la veille (PDH/PDL immédiats).
+            Polling 15 s.
           </div>
         </div>
         <div className="field">
@@ -59,7 +60,11 @@ export function SettingsTab() {
             placeholder="clé Twelve Data"
             autoComplete="off"
           />
-          <div className="hint">WebSocket temps réel (~170 ms). Prioritaire si renseignée.</div>
+          <div className="hint">
+            WebSocket temps réel (~170 ms) + récupération de l'historique M1 et
+            des jours précédents : l'analyse ICT démarre immédiatement.
+            Prioritaire si renseignée.
+          </div>
         </div>
         <div className="field">
           <label htmlFor="capital">Capital initial ($)</label>
