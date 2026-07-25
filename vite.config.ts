@@ -3,7 +3,12 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
+// Racine par défaut en local ; le workflow GitHub Pages passe
+// DEPLOY_BASE=/Bot-XAUUSD/ pour servir l'app sous le chemin du repo.
+const base = process.env.DEPLOY_BASE ?? "/";
+
 export default defineConfig({
+  base,
   plugins: [
     react(),
     VitePWA({
@@ -18,8 +23,8 @@ export default defineConfig({
         short_name: "AURUM",
         description:
           "Bot de paper trading XAUUSD autonome. Prix réels, exécutions simulées.",
-        start_url: "/",
-        scope: "/",
+        start_url: base,
+        scope: base,
         display: "standalone",
         orientation: "portrait",
         theme_color: "#05070c",
@@ -51,7 +56,7 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ["**/*.{js,css,html,svg,png,ico,woff2}"],
-        navigateFallback: "/index.html",
+        navigateFallback: `${base}index.html`,
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/(api\.gold-api\.com|www\.goldapi\.io)\/.*/,
