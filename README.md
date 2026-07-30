@@ -71,6 +71,12 @@ Une PWA iOS est **suspendue en arrière-plan** : **le bot ne trade PAS quand l'a
 
 L'app ne prétendra **jamais** avoir tradé en arrière-plan.
 
+## Outil de dev : MCP TradingView (optionnel)
+
+`.mcp.json` déclare le serveur MCP communautaire [`tradingview-mcp-server`](https://github.com/atilaahmettaner/tradingview-mcp) (37 outils : analyse technique multi-timeframe, screeners, patterns de bougies, backtests, sentiment). Claude Code le propose automatiquement à l'ouverture du projet ; `uv` doit être installé (`curl -LsSf https://astral.sh/uv/install.sh | sh`). Aucune clé requise.
+
+**C'est un outil d'assistance au développement, pas une source de données pour l'app.** Il permet de croiser la lecture ICT du bot avec les indicateurs TradingView pendant qu'on travaille sur la stratégie. AURUM tourne intégralement dans le navigateur : ses prix viennent des adapters de `src/data/`, jamais d'un serveur MCP. Le paquet interroge par ailleurs l'API interne non documentée de TradingView — usage personnel uniquement.
+
 ## Structure
 
 ```
